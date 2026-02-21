@@ -5,13 +5,13 @@ COMP 3610 - Assignment 1
 Run with:
 streamlit run app.py
 """
+
 import duckdb
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 
 
-# Configure page settings before any Streamlit content is rendered
 st.set_page_config(
     page_title="NYC Taxi Dashboard",
     page_icon="🚕",
@@ -20,7 +20,6 @@ st.set_page_config(
 )
 
 
-# Custom CSS styling for dashboard headers
 st.markdown(
     """
 <style>
@@ -39,110 +38,145 @@ st.markdown(
 )
 
 
-# Load cleaned dataset and perform final preparation steps
+TRIP_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet"
+ZONE_URL = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
+
+PAYMENT_MAP = {
+    1: "Credit Card",
+    2: "Cash",
+    3: "No Charge",
+    4: "Dispute",
+    5: "Unknown",
+    6: "Voided Trip",
+}
+
+LABEL_TO_CODE = {v: k for k, v in PAYMENT_MAP.items()}
+
+
 @st.cache_data
-def load_data() -> pd.DataFrame:
-    trip_url = "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet"
-    zone_url = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
+def load_zones() -> pd.DataFrame:
+    zones_df = pd.read_csv(ZONE_URL)
+    return zones_df
 
-    zones = pd.read_csv(zone_url)
 
-    df = duckdb.query(f"""
+@st.cache_data
+def get_min_max_dates() -> tuple[pd.Timestamp, pd.Timestamp]:
+    # Get min/max directly from parquet without loading all rows into pandas
+    res = duckdb.query(f"""
+        SELECT
+            MIN(tpep_pickup_datetime) AS min_dt,
+            MAX(tpep_pickup_datetime) AS max_dt
+        FROM read_parquet('{TRIP_URL}')
+    """).to_df()
+
+    min_dt = pd.to_datetime(res.loc[0, "min_dt"], errors="coerce")
+    max_dt = pd.to_datetime(res.loc[0, "max_dt"], errors="coerce")
+    return min_dt, max_dt
+
+
+@st.cache_data
+def get_filtered_df(
+    start_datetime: pd.Timestamp,
+    end_datetime: pd.Timestamp,
+    hour_min: int,
+    hour_max: int,
+    payment_labels: list[str],
+    selected_zone_names: list[str],
+) -> pd.DataFrame:
+    zones_df = load_zones()
+
+    # Convert readable payment labels -> payment_type codes for SQL
+    payment_codes = [LABEL_TO_CODE[p] for p in payment_labels if p in LABEL_TO_CODE]
+    if not payment_codes:
+        # If user unselects everything, return empty
+        return pd.DataFrame()
+
+    zone_filter_sql = ""
+    if selected_zone_names:
+        loc_ids = zones_df[zones_df["Zone"].isin(selected_zone_names)]["LocationID"].dropna().astype(int).unique().tolist()
+        if loc_ids:
+            zone_filter_sql = f"AND PULocationID IN ({','.join(map(str, loc_ids))})"
+
+    sql = f"""
         SELECT
             tpep_pickup_datetime,
             tpep_dropoff_datetime,
             PULocationID,
             DOLocationID,
-            passenger_count,
             trip_distance,
             fare_amount,
             tip_amount,
             total_amount,
             payment_type
-        FROM read_parquet('{trip_url}')
-    """).to_df()
+        FROM read_parquet('{TRIP_URL}')
+        WHERE
+            tpep_pickup_datetime >= TIMESTAMP '{start_datetime}'
+            AND tpep_pickup_datetime < TIMESTAMP '{end_datetime}'
+            AND EXTRACT('hour' FROM tpep_pickup_datetime) BETWEEN {hour_min} AND {hour_max}
+            AND payment_type IN ({','.join(map(str, payment_codes))})
+            AND trip_distance > 0
+            AND fare_amount > 0
+            AND fare_amount <= 500
+            AND tpep_dropoff_datetime > tpep_pickup_datetime
+            {zone_filter_sql}
+    """
 
+    df = duckdb.query(sql).to_df()
+
+    # Datetimes + derived fields (cheap once data is filtered)
     df["tpep_pickup_datetime"] = pd.to_datetime(df["tpep_pickup_datetime"], errors="coerce")
     df["tpep_dropoff_datetime"] = pd.to_datetime(df["tpep_dropoff_datetime"], errors="coerce")
-
-    df = df.dropna(subset=[
-        "tpep_pickup_datetime",
-        "tpep_dropoff_datetime",
-        "PULocationID",
-        "DOLocationID",
-        "fare_amount"
-    ])
-
-    df = df[
-        (df["trip_distance"] > 0) &
-        (df["fare_amount"] > 0) &
-        (df["fare_amount"] <= 500) &
-        (df["tpep_dropoff_datetime"] > df["tpep_pickup_datetime"])
-    ]
 
     df["trip_duration_minutes"] = (
         df["tpep_dropoff_datetime"] - df["tpep_pickup_datetime"]
     ).dt.total_seconds() / 60
 
-    df["trip_speed_mph"] = df["trip_distance"] / (
-        df["trip_duration_minutes"].replace(0, pd.NA) / 60
-    )
-
     df["pickup_hour"] = df["tpep_pickup_datetime"].dt.hour
     df["pickup_day_of_week"] = df["tpep_pickup_datetime"].dt.day_name()
-
-    df = df.merge(
-        zones[["LocationID", "Zone"]],
-        left_on="PULocationID",
-        right_on="LocationID",
-        how="left"
-    ).rename(columns={"Zone": "pickup_zone"})
-
-    payment_map = {
-        1: "Credit Card",
-        2: "Cash",
-        3: "No Charge",
-        4: "Dispute",
-        5: "Unknown",
-        6: "Voided Trip",
-    }
-    df["payment_label"] = df["payment_type"].map(payment_map).fillna("Other/Missing")
-
     df["pickup_date"] = df["tpep_pickup_datetime"].dt.date
 
+    # Attach pickup zone names for charts
+    df = df.merge(
+        zones_df[["LocationID", "Zone"]],
+        left_on="PULocationID",
+        right_on="LocationID",
+        how="left",
+    ).rename(columns={"Zone": "pickup_zone"})
+
+    # Payment labels for chart
+    df["payment_label"] = df["payment_type"].map(PAYMENT_MAP).fillna("Other/Missing")
+
+    # Ordered weekdays for heatmap
     day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    df["pickup_day_of_week"] = pd.Categorical(
-        df["pickup_day_of_week"],
-        categories=day_order,
-        ordered=True
-    )
+    df["pickup_day_of_week"] = pd.Categorical(df["pickup_day_of_week"], categories=day_order, ordered=True)
 
     return df
 
-df = load_data()
 
-
-# Dashboard title and subtitle
+# Header
 st.markdown('<div class="main-header">NYC Taxi Trip Dashboard</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Yellow Taxi Trips - January 2024</div>', unsafe_allow_html=True)
-#description of the dashboard
+
 st.markdown(
     """
     This dashboard provides insights into trip patterns, fare dynamics, and payment methods for January 2024.  
-    Explore key metrics and trends in NYC taxi trips.  Use the filters in the sidebar to customize the data view.
+    Explore key metrics and trends in NYC taxi trips. Use the filters in the sidebar to customize the data view.
     """,
     unsafe_allow_html=True,
 )
+
 st.divider()
 
 
-# Sidebar filters allow interactive exploration of the dataset
+# Sidebar filters
 st.sidebar.header("Filters")
 
-min_date = pd.to_datetime(df["tpep_pickup_datetime"].min()).date()
-max_date = pd.to_datetime(df["tpep_pickup_datetime"].max()).date()
+zones = load_zones()
+min_dt, max_dt = get_min_max_dates()
 
-# Date range selector
+min_date = min_dt.date()
+max_date = max_dt.date()
+
 date_range = st.sidebar.date_input(
     "Pickup Date Range",
     value=(min_date, max_date),
@@ -159,19 +193,16 @@ else:
 start_datetime = pd.to_datetime(start_date)
 end_datetime = pd.to_datetime(end_date) + pd.Timedelta(days=1)
 
-# Hour range selector
 hour_range = st.sidebar.slider("Pickup Hour Range", 0, 23, (0, 23))
 
-# Payment type selector
-payment_labels = sorted(df["payment_label"].dropna().unique().tolist())
+payment_labels_all = sorted(list(LABEL_TO_CODE.keys()))
 selected_payments = st.sidebar.multiselect(
     "Payment Type",
-    payment_labels,
-    default=payment_labels,
+    payment_labels_all,
+    default=payment_labels_all,
 )
 
-# Optional zone selector
-zones_list = sorted(df["pickup_zone"].dropna().unique().tolist())
+zones_list = sorted(zones["Zone"].dropna().unique().tolist())
 selected_zones = st.sidebar.multiselect(
     "Pickup Zones",
     zones_list,
@@ -179,29 +210,23 @@ selected_zones = st.sidebar.multiselect(
     help="Leave empty to include all zones.",
 )
 
-
-# Apply filtering logic based on sidebar selections
-filtered_df = df[
-    (df["tpep_pickup_datetime"] >= start_datetime)
-    & (df["tpep_pickup_datetime"] < end_datetime)
-    & (df["pickup_hour"] >= hour_range[0])
-    & (df["pickup_hour"] <= hour_range[1])
-    & (df["payment_label"].isin(selected_payments))
-]
-
-if selected_zones:
-    filtered_df = filtered_df[filtered_df["pickup_zone"].isin(selected_zones)]
+filtered_df = get_filtered_df(
+    start_datetime=start_datetime,
+    end_datetime=end_datetime,
+    hour_min=hour_range[0],
+    hour_max=hour_range[1],
+    payment_labels=selected_payments,
+    selected_zone_names=selected_zones,
+)
 
 if filtered_df.empty:
     st.warning("No data available for the selected filters.")
     st.stop()
 
 
-# Display high-level summary statistics
+# Key metrics
 st.subheader("Key Metrics")
 
-#was squeezing total revenue value 
-#col1, col2, col3, col4, col5 = st.columns(5)
 col1, col2, col3, col4, col5 = st.columns([1, 0.8, 1.5, 1, 1])
 col1.metric("Total Trips", f"{len(filtered_df):,}")
 col2.metric("Average Fare", f"${filtered_df['fare_amount'].mean():.2f}")
@@ -212,13 +237,11 @@ col5.metric("Avg Duration", f"{filtered_df['trip_duration_minutes'].mean():.2f} 
 st.divider()
 
 
-# Organize visualizations into tabs for structured dashboard layout
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["Top Pickup Zones", "Avg Fare by Hour", "Trip Distance Dist.", "Payment Types", "Day/Hour Heatmap"]
 )
 
 
-# Bar chart showing top pickup zones
 with tab1:
     st.subheader("Top 10 Pickup Zones by Trip Count")
 
@@ -242,7 +265,6 @@ with tab1:
     )
 
 
-# Line chart showing average fare by hour
 with tab2:
     st.subheader("Average Fare by Hour of Day")
 
@@ -252,20 +274,25 @@ with tab2:
         .reset_index()
     )
 
-    fig2 = px.line(avg_fare_hour, x="pickup_hour", y="fare_amount", markers=True,
-                   title="Average Fare by Pickup Hour")
+    fig2 = px.line(
+        avg_fare_hour,
+        x="pickup_hour",
+        y="fare_amount",
+        markers=True,
+        title="Average Fare by Pickup Hour",
+        labels={"pickup_hour": "Pickup Hour", "fare_amount": "Average Fare ($)"}
+    )
     st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown(
-        "**Insight:** Average fare shows a pronounced spike in the early morning, peaking around 5 AM at nearly \$28, "
-        "which is significantly higher than the typical daytime range of roughly \$17 - \$20. "
+        "**Insight:** Average fare shows a pronounced spike in the early morning, peaking around 5 AM at nearly $28, "
+        "which is significantly higher than the typical daytime range of roughly $17–$20. "
         "After 7 AM, fares stabilize and remain relatively consistent throughout business hours. "
         "This pattern suggests early-morning trips are likely longer-distance rides, such as airport travel, "
         "rather than simply congestion-driven commuter traffic."
     )
 
 
-# Histogram of trip distances
 with tab3:
     st.subheader("Distribution of Trip Distances")
 
@@ -274,23 +301,21 @@ with tab3:
     fig3 = px.histogram(
         filtered_df[filtered_df["trip_distance"] <= max_distance],
         x="trip_distance",
-        nbins=50,
-        title="Trip Distance Distribution (Trimmed at 99th Percentile)"
+        nbins=40,
+        title="Trip Distance Distribution (Trimmed at 99th Percentile)",
+        labels={"trip_distance": "Trip Distance (miles)"}
     )
-
-    fig3.update_layout(xaxis_title="Trip Distance (miles)")
     st.plotly_chart(fig3, use_container_width=True)
 
     st.markdown(
         "**Insight:** The distribution is heavily right-skewed, with the majority of trips concentrated under approximately 3 miles. "
-        "Trip counts decline sharply after 4 - 5 miles, indicating that most taxi rides are short urban journeys. "
-        "A smaller secondary cluster appears in the 8 - 12 mile range and again near 18 - 20 miles, "
+        "Trip counts decline sharply after 4–5 miles, indicating that most taxi rides are short urban journeys. "
+        "A smaller secondary cluster appears in the 8–12 mile range and again near 18–20 miles, "
         "which is consistent with airport or cross-borough travel. "
         "Trimming at the 99th percentile prevents extreme outliers from compressing the main distribution while preserving the overall histogram structure."
     )
 
 
-# Payment type breakdown
 with tab4:
     st.subheader("Payment Type Breakdown")
 
@@ -301,20 +326,18 @@ with tab4:
     )
     payment_counts.columns = ["Payment Type", "Trips"]
 
-    fig4 = px.bar(payment_counts, x="Payment Type", y="Trips",
-                  title="Payment Method Usage")
+    fig4 = px.bar(payment_counts, x="Payment Type", y="Trips", title="Payment Method Usage")
     st.plotly_chart(fig4, use_container_width=True)
 
     st.markdown(
-        "**Insight:** Credit card payments overwhelmingly dominate taxi transactions, accounting for the vast majority of trips "
-        "(well over 2 million rides), while cash represents a much smaller but still significant portion. "
+        "**Insight:** Credit card payments overwhelmingly dominate taxi transactions, accounting for the vast majority of trips, "
+        "while cash represents a much smaller but still significant portion. "
         "Other categories such as dispute, no charge, and missing payments contribute only a very small fraction of total trips. "
         "This heavy reliance on credit card transactions helps explain why tip percentage analysis is most reliable when restricted "
         "to card payments, as digital transactions consistently record gratuity amounts."
     )
 
 
-# Heatmap showing trip volume by day and hour
 with tab5:
     st.subheader("Trips by Day of Week and Hour")
 
