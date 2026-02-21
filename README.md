@@ -1,0 +1,188 @@
+NYC Taxi Trip Analysis Dashboard
+
+COMP 3610 – Assignment 1
+
+Project Overview
+
+This project implements an end-to-end data engineering and analytics pipeline using the NYC Yellow Taxi January 2024 dataset. The objective is to demonstrate data ingestion, cleaning, feature engineering, SQL-based analysis, and interactive dashboard development.
+
+The workflow includes:
+
+Programmatic data ingestion from official NYC TLC sources
+
+Data validation and cleaning
+
+Feature engineering for time and trip metrics
+
+Analytical queries using DuckDB
+
+Interactive dashboard development using Streamlit
+
+Data visualization using Plotly
+
+The final output is a fully interactive Streamlit dashboard that allows users to explore taxi trip patterns, fare dynamics, payment behavior, and temporal trends.
+
+Dataset Source
+
+NYC Taxi & Limousine Commission (TLC) Trip Record Data
+https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page
+
+Dataset used:
+
+yellow_tripdata_2024-01.parquet
+
+taxi_zone_lookup.csv
+
+Project Structure
+.
+├── app.py
+├── Assignment1_Notebook.ipynb
+├── requirements.txt
+├── README.md
+├── data/
+│   ├── raw/
+│   └── processed/
+
+
+Directory Description
+
+data/raw/
+Stores the original downloaded dataset files.
+
+data/processed/
+Stores the cleaned and feature-engineered dataset:
+
+data/processed/cleaned_taxi_2024_01.parquet
+
+Assignment1_Notebook.ipynb:
+Contains the full data pipeline:
+ingestion
+validation
+cleaning
+feature engineering
+SQL analysis
+visualization prototyping
+
+app.py:
+Streamlit dashboard application.
+
+
+
+Setup Instructions
+1. Clone or Download the Project
+
+Navigate into the project directory.
+
+2. Create a Virtual Environment
+
+Windows:
+python -m venv .venv
+.\.venv\Scripts\activate
+
+3. Install Required Packages
+pip install -r requirements.txt
+
+4. Run the Notebook (Data Processing)
+
+Open Assignment1_Notebook.ipynb and run all cells.
+
+This step will:
+
+Download raw datasets
+
+Validate schema
+
+Clean invalid records
+
+Engineer new features
+
+Execute SQL analysis
+
+Save processed data to:
+data/processed/cleaned_taxi_2024_01.parquet
+(Make sure this file is successfully created before proceeding.)
+
+5. Run the Streamlit Dashboard
+
+From the project root:
+streamlit run app.py
+
+The dashboard will open automatically in your browser at:
+http://localhost:8501
+
+
+
+Dashboard Features
+
+The Streamlit dashboard includes:
+Interactive Filters:
+Pickup date range
+Pickup hour range
+Payment type selection
+Pickup zone selection
+
+Key Metrics:
+Total trips
+Average fare
+Total revenue
+Average distance
+Average trip duration
+
+Visualizations:
+Top 10 pickup zones by trip count
+Average fare by pickup hour
+Trip distance distribution (trimmed at 99th percentile)
+Payment type breakdown
+Day-of-week vs hour heatmap
+All charts dynamically update based on selected filters.
+
+Data Processing Summary:
+Data Cleaning:
+The following records were removed:
+Missing critical fields
+Non-positive trip distances
+Non-positive fares
+Extreme fares above $500
+Invalid timestamps (dropoff before pickup)
+
+Feature Engineering:
+
+Additional columns created:
+trip_duration_minutes
+trip_speed_mph
+pickup_hour
+pickup_day_of_week
+pickup_zone
+pickup_date
+These features support temporal analysis and dashboard filtering.
+
+SQL Analysis:
+DuckDB was used to answer key analytical questions:
+Top 10 busiest pickup zones
+Average fare by hour
+Payment type percentage distribution
+Average tip percentage by weekday (credit card only)
+Most common pickup–dropoff zone pairs
+These insights informed dashboard design decisions.
+
+AI Tools Used:
+
+ChatGPT was used to assist with:
+SQL query refinement
+Debugging environment and dependency issues
+Improving visualization design
+Refining analytical insight statements
+Structuring documentation (README and notebook explanations)
+All analysis logic and implementation decisions were reviewed and validated.
+
+Reproducibility
+This project is fully reproducible:
+1. Create virtual environment
+2. Install requirements
+3. Run notebook
+4. Run Streamlit dashboard
+No manual data downloads are required.
+
+Conclusion
+
+This project demonstrates a complete data engineering workflow from raw ingestion to interactive visualization. The analysis reveals that NYC taxi demand is heavily concentrated in central Manhattan and airport zones, with strong daytime activity and significant dominance of credit card payments. The interactive dashboard enables exploration of spatial, temporal, and behavioral patterns within the dataset.
